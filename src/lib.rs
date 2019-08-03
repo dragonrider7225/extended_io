@@ -85,6 +85,26 @@ pub fn read_u128_le(src: &mut dyn Read) -> io::Result<u128> {
     Ok(u128::from_le_bytes(buf))
 }
 
+/// Read a big-endian f32 from the specified bit source.
+pub fn read_f32(src: &mut dyn Read) -> io::Result<f32> {
+    read_u32(src).map(f32::from_bits)
+}
+
+/// Read a little-endian f32 from the specified bit source.
+pub fn read_f32_le(src: &mut dyn Read) -> io::Result<f32> {
+    read_u32_le(src).map(f32::from_bits)
+}
+
+/// Read a big-endian f64 from the specified bit source.
+pub fn read_f64(src: &mut dyn Read) -> io::Result<f64> {
+    read_u64(src).map(f64::from_bits)
+}
+
+/// Read a little-endian f64 from the specified bit source.
+pub fn read_f64_le(src: &mut dyn Read) -> io::Result<f64> {
+    read_u64_le(src).map(f64::from_bits)
+}
+
 /// Read `length` bytes into a new `Vec` from the specified bit source.
 pub fn read_bytes(src: &mut dyn Read, length: u64) -> io::Result<Vec<u8>> {
     let mut handle = src.take(length);
@@ -161,6 +181,26 @@ pub fn write_u128(out: &mut dyn Write, val: u128) -> io::Result<()> {
 /// Write a little-endian u128 to the specified bit sink.
 pub fn write_u128_le(out: &mut dyn Write, val: u128) -> io::Result<()> {
     out.write_all(&val.to_le_bytes())
+}
+
+/// Write a big-endian f32 to the specified bit sink.
+pub fn write_f32(out: &mut dyn Write, val: f32) -> io::Result<()> {
+    write_u32(val.to_bits())
+}
+
+/// Write a little-endian f32 to the specified bit sink.
+pub fn write_f32_le(out: &mut dyn Write, val: f32) -> io::Result<()> {
+    write_u32_le(val.to_bits())
+}
+
+/// Write a big-endian f64 to the specified bit sink.
+pub fn write_f64(out: &mut dyn Write, val: f64) -> io::Result<()> {
+    write_u64(val.to_bits())
+}
+
+/// Write a little-endian f64 to the specified bit sink.
+pub fn write_f64_le(out: &mut dyn Write, val: f64) -> io::Result<()> {
+    write_u64_le(val.to_bits())
 }
 
 /// Write the specified `Vec` of bytes to the specified bit sink.
