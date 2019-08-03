@@ -185,27 +185,35 @@ pub fn write_u128_le(out: &mut dyn Write, val: u128) -> io::Result<()> {
 
 /// Write a big-endian f32 to the specified bit sink.
 pub fn write_f32(out: &mut dyn Write, val: f32) -> io::Result<()> {
-    write_u32(val.to_bits())
+    write_u32(out, val.to_bits())
 }
 
 /// Write a little-endian f32 to the specified bit sink.
 pub fn write_f32_le(out: &mut dyn Write, val: f32) -> io::Result<()> {
-    write_u32_le(val.to_bits())
+    write_u32_le(out, val.to_bits())
 }
 
 /// Write a big-endian f64 to the specified bit sink.
 pub fn write_f64(out: &mut dyn Write, val: f64) -> io::Result<()> {
-    write_u64(val.to_bits())
+    write_u64(out, val.to_bits())
 }
 
 /// Write a little-endian f64 to the specified bit sink.
 pub fn write_f64_le(out: &mut dyn Write, val: f64) -> io::Result<()> {
-    write_u64_le(val.to_bits())
+    write_u64_le(out, val.to_bits())
 }
 
 /// Write the specified `Vec` of bytes to the specified bit sink.
+#[deprecated(since = "1.2.0", note = "replaced by write_byte_slice, which \
+                                      doesn't require that the bytes be housed \
+                                      in a Vec")]
 pub fn write_bytes(out: &mut dyn Write, vals: Vec<u8>) -> io::Result<()> {
-    out.write_all(&vals[..])
+    write_byte_slice(out, &vals[..])
+}
+
+/// Write the specified slice of bytes to the specified bit sink.
+pub fn write_byte_slice(out: &mut dyn Write, vals: &[u8]) -> io::Result<()> {
+    out.write_all(vals)
 }
 
 #[cfg(test)]
@@ -254,58 +262,20 @@ mod test {
         let mut c = Cursor::new(Vec::with_capacity(2));
         write_u16(&mut c, v)?;
         let buf = c.into_inner();
-        match (buf.get(0), buf.get(1)) {
-            (Some(0x12u8), Some(0x34u8)) => Ok(()),
-            (Some(0x12u8), Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected second byte in buffer to be {}, found {}",
-                    low_bits, y
-                ),
-            )),
-            (Some(0x12u8), None) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected second byte in buffer to be {}, found None",
-                    low_bits
-                ),
-            )),
-            (Some(x), Some(0x34u8)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected first byte in buffer to be {}, found {}",
-                    high_bits, x
-                ),
-            )),
-            (None, Some(0x34u8)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected first byte in buffer to be {}, found None",
-                    high_bits
-                ),
-            )),
-            (Some(x), Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [{}, {}]",
-                    high_bits, low_bits, x, y
-                ),
-            )),
-            (Some(x), None) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [{}, None]",
-                    high_bits, low_bits, x
-                ),
-            )),
-            (None, Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [None, {}]",
-                    high_bits, low_bits, y
-                ),
-            )),
-            (None, None) => Err(Error::new(ErrorKind::Other, "Write failed")),
+        match &buf[..2] {
+            &[0x12u8, 0x34u8] => Ok(()),
+            &[x, y] => {
+                let msg = format!(
+                    "Expected buffer contents to be [{}, {}], found [{}, {}]",
+                    high_bits, low_bits, x, y);
+                Err(Error::new(ErrorKind::Other, msg))
+            },
+            slice => {
+                let msg = format!(
+                    "Expected buffer contents to be [{}, {}], found {:?}",
+                    high_bits, low_bits, slice);
+                Err(Error::new(ErrorKind::Other, msg))
+            },
         }
     }
 
@@ -317,58 +287,20 @@ mod test {
         let mut c = Cursor::new(Vec::with_capacity(2));
         write_u16_le(&mut c, v)?;
         let buf = c.into_inner();
-        match (buf.get(1), buf.get(0)) {
-            (Some(0x12u8), Some(0x34u8)) => Ok(()),
-            (Some(0x12u8), Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected first byte in buffer to be {}, found {}",
-                    low_bits, y
-                ),
-            )),
-            (Some(0x12u8), None) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected first byte in buffer to be {}, found None",
-                    low_bits
-                ),
-            )),
-            (Some(x), Some(0x34u8)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected second byte in buffer to be {}, found {}",
-                    high_bits, x
-                ),
-            )),
-            (None, Some(0x34u8)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected second byte in buffer to be {}, found None",
-                    high_bits
-                ),
-            )),
-            (Some(x), Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [{}, {}]",
-                    low_bits, high_bits, y, x
-                ),
-            )),
-            (Some(x), None) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [None, {}]",
-                    low_bits, high_bits, x
-                ),
-            )),
-            (None, Some(y)) => Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Expected buffer to be [{}, {}] found [{}, None]",
-                    low_bits, high_bits, y
-                ),
-            )),
-            (None, None) => Err(Error::new(ErrorKind::Other, "Write failed")),
+        match &buf[..2] {
+            &[0x34u8, 0x12u8] => Ok(()),
+            &[y, x] => {
+                let msg = format!(
+                    "Expected buffer contents to be [{}, {}], found [{}, {}]",
+                    low_bits, high_bits, y, x);
+                Err(Error::new(ErrorKind::Other, msg))
+            },
+            slice => {
+                let msg = format!(
+                    "Expected buffer contents to be [{}, {}], found {:?}",
+                    low_bits, high_bits, slice);
+                Err(Error::new(ErrorKind::Other, msg))
+            },
         }
     }
 }
