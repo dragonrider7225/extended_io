@@ -1,7 +1,7 @@
 use std::{
     convert::TryFrom,
     error,
-    io::{self, Error, Read, Write},
+    io::{self, BufRead, Error, Read, Write},
     str::FromStr,
 };
 
@@ -206,9 +206,11 @@ pub fn write_f64_le(out: &mut dyn Write, val: f64) -> io::Result<()> {
 }
 
 /// Write the specified `Vec` of bytes to the specified bit sink.
-#[deprecated(since = "1.2.0", note = "replaced by write_byte_slice, which \
-                                      doesn't require that the bytes be housed \
-                                      in a Vec")]
+#[deprecated(
+    since = "1.2.0",
+    note = "replaced by write_byte_slice, which doesn't require that the bytes \
+            be housed in a Vec"
+)]
 pub fn write_bytes(out: &mut dyn Write, vals: Vec<u8>) -> io::Result<()> {
     write_byte_slice(out, &vals[..])
 }
@@ -218,20 +220,44 @@ pub fn write_byte_slice(out: &mut dyn Write, vals: &[u8]) -> io::Result<()> {
     out.write_all(vals)
 }
 
+/// Read a line from the specified bit source and convert that string into a T.
+pub fn read_t<T, E>(src: &mut dyn BufRead) -> io::Result<T>
+where
+    T: FromStr<Err = E>,
+    E: Into<Box<dyn error::Error + Send + Sync>>,
+{
+    let mut buf = String::new();
+    let _ = src.read_line(&mut buf)?;
+    match buf.trim().parse() {
+        Ok(x) => Ok(x),
+        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+    }
+}
+
+/**
+ * Like [`read_t`] but specialized to stdin.
+ *
+ * [`read_t`]: fn.read_t
+ */
+pub fn read_t_stdin<T, E>() -> io::Result<T>
+where
+    T: FromStr<Err = E>,
+    E: Into<Box<dyn error::Error + Send + Sync>>,
+{
+    read_t(&mut io::stdin().lock())
+}
+
+/// Write the specified string to stdout then read an object of the specified
+/// FromStr type from stdin as a string.
 pub fn prompt<T, E>(p: &str) -> io::Result<T>
-  where
+where
     T: FromStr<Err = E>,
     E: Into<Box<dyn error::Error + Send + Sync>>,
 {
     let mut stdout = io::stdout();
     stdout.write_all(&p.as_bytes()[..])?;
     stdout.flush()?;
-    let mut buf = String::new();
-    let _ = io::stdin().read_line(&mut buf)?;
-    match <T as FromStr>::from_str(&buf) {
-        Ok(x) => Ok(x),
-        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
-    }
+    read_t_stdin()
 }
 
 #[cfg(test)]
@@ -248,10 +274,10 @@ mod test {
         let buf = c.into_inner();
         match buf.get(0) {
             Some(8u8) => Ok(()),
-            Some(x) => Err(Error::new(
-                ErrorKind::Other,
-                format!("Expected first byte in buffer to be {}, found {}", v, x),
-            )),
+            Some(x) => {
+                let msg = format!("Expected first byte in buffer to be {}, found {}", v, x);
+                Err(Error::new(ErrorKind::Other, msg))
+            }
             None => Err(Error::new(ErrorKind::Other, "Write failed")),
         }
     }
@@ -264,10 +290,10 @@ mod test {
         let buf = c.into_inner();
         match buf.get(0) {
             Some(8u8) => Ok(()),
-            Some(x) => Err(Error::new(
-                ErrorKind::Other,
-                format!("Expected first byte in buffer to be {}, found {}", v, x),
-            )),
+            Some(x) => {
+                let msg = format!("Expected first byte in buffer to be {}, found {}", v, x);
+                Err(Error::new(ErrorKind::Other, msg))
+            }
             None => Err(Error::new(ErrorKind::Other, "Write failed")),
         }
     }
@@ -285,15 +311,17 @@ mod test {
             &[x, y] => {
                 let msg = format!(
                     "Expected buffer contents to be [{}, {}], found [{}, {}]",
-                    high_bits, low_bits, x, y);
+                    high_bits, low_bits, x, y
+                );
                 Err(Error::new(ErrorKind::Other, msg))
-            },
+            }
             slice => {
                 let msg = format!(
                     "Expected buffer contents to be [{}, {}], found {:?}",
-                    high_bits, low_bits, slice);
+                    high_bits, low_bits, slice
+                );
                 Err(Error::new(ErrorKind::Other, msg))
-            },
+            }
         }
     }
 
@@ -310,15 +338,17 @@ mod test {
             &[y, x] => {
                 let msg = format!(
                     "Expected buffer contents to be [{}, {}], found [{}, {}]",
-                    low_bits, high_bits, y, x);
+                    low_bits, high_bits, y, x
+                );
                 Err(Error::new(ErrorKind::Other, msg))
-            },
+            }
             slice => {
                 let msg = format!(
                     "Expected buffer contents to be [{}, {}], found {:?}",
-                    low_bits, high_bits, slice);
+                    low_bits, high_bits, slice
+                );
                 Err(Error::new(ErrorKind::Other, msg))
-            },
+            }
         }
     }
 }
