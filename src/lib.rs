@@ -1,6 +1,8 @@
 use std::{
     convert::TryFrom,
+    error,
     io::{self, Error, Read, Write},
+    str::FromStr,
 };
 
 /**
@@ -214,6 +216,22 @@ pub fn write_bytes(out: &mut dyn Write, vals: Vec<u8>) -> io::Result<()> {
 /// Write the specified slice of bytes to the specified bit sink.
 pub fn write_byte_slice(out: &mut dyn Write, vals: &[u8]) -> io::Result<()> {
     out.write_all(vals)
+}
+
+pub fn prompt<T, E>(p: &str) -> io::Result<T>
+  where
+    T: FromStr<Err = E>,
+    E: Into<Box<dyn error::Error + Send + Sync>>,
+{
+    let mut stdout = io::stdout();
+    stdout.write_all(&p.as_bytes()[..])?;
+    stdout.flush()?;
+    let mut buf = String::new();
+    let _ = io::stdin().read_line(&mut buf)?;
+    match <T as FromStr>::from_str(&buf) {
+        Ok(x) => Ok(x),
+        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+    }
 }
 
 #[cfg(test)]
