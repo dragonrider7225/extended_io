@@ -253,32 +253,32 @@ pub fn read_i128_ne(src: &mut dyn Read) -> io::Result<i128> {
 
 /// Read a big-endian f32 from the specified bit source.
 pub fn read_f32(src: &mut dyn Read) -> io::Result<f32> {
-    f32::from_bits(read_u32(src)?)
+    Ok(f32::from_bits(read_u32(src)?))
 }
 
 /// Read a little-endian f32 from the specified bit source.
 pub fn read_f32_le(src: &mut dyn Read) -> io::Result<f32> {
-    f32::from_bits(read_u32_le(src)?)
+    Ok(f32::from_bits(read_u32_le(src)?))
 }
 
 /// Read a network-endian f32 from the specified bit source.
 pub fn read_f32_ne(src: &mut dyn Read) -> io::Result<f32> {
-    f32::from_bits(read_u32_ne(src)?)
+    Ok(f32::from_bits(read_u32_ne(src)?))
 }
 
 /// Read a big-endian f64 from the specified bit source.
 pub fn read_f64(src: &mut dyn Read) -> io::Result<f64> {
-    f64::from_bits(read_u64(src)?)
+    Ok(f64::from_bits(read_u64(src)?))
 }
 
 /// Read a little-endian f64 from the specified bit source.
 pub fn read_f64_le(src: &mut dyn Read) -> io::Result<f64> {
-    f64::from_bits(read_u64_le(src)?)
+    Ok(f64::from_bits(read_u64_le(src)?))
 }
 
 /// Read a network-endian f64 from the specified bit source.
 pub fn read_f64_ne(src: &mut dyn Read) -> io::Result<f64> {
-    f64::from_bits(read_u64_ne(src)?)
+    Ok(f64::from_bits(read_u64_ne(src)?))
 }
 
 /// Read `length` bytes into a new `Vec` from the specified bit source.
@@ -538,7 +538,7 @@ where
     let _ = src.read_line(&mut buf)?;
     match buf.trim().parse() {
         Ok(x) => Ok(x),
-        Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
+        Err(e) => Err(Error::new(io::ErrorKind::InvalidData, e)),
     }
 }
 
