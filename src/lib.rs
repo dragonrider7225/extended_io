@@ -5,6 +5,8 @@ use std::{
     str::FromStr,
 };
 
+pub mod pipe;
+
 /**
  * Read a "big-endian" u8 from the specified bit source. Since big-endian and
  * little-endian refer to byte order, not bit order, there is no difference
