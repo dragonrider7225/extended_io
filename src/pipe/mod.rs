@@ -1,6 +1,9 @@
 use std::{
     io::{self, Read, Write},
-    sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     thread,
 };
 
@@ -14,7 +17,7 @@ pub struct Pipe {
 
 impl Pipe {
     /// Create a pipe.
-    pub fn new() -> (impl Read, impl Write) {
+    pub fn new() -> (PipeRead, PipeWrite) {
         let ret = Self::default();
         (PipeRead::new(ret.clone()), PipeWrite::new(ret))
     }
@@ -56,11 +59,18 @@ impl Read for Pipe {
 
 impl Write for Pipe {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut bytes = self.bytes.lock().unwrap();
-        let len = usize::min(std::usize::MAX - bytes.len(), buf.len());
-        bytes.reserve(len);
-        bytes.extend_from_slice(buf);
-        Ok(len)
+        if self.readers.load(Ordering::SeqCst) == 0 {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Pipe: no readers",
+            ))
+        } else {
+            let mut bytes = self.bytes.lock().unwrap();
+            let len = usize::min(std::usize::MAX - bytes.len(), buf.len());
+            bytes.reserve(len);
+            bytes.extend_from_slice(buf);
+            Ok(len)
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -69,15 +79,17 @@ impl Write for Pipe {
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         if self.readers.load(Ordering::SeqCst) == 0 {
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "Pipe: no readers"))
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Pipe: no readers",
+            ))
         } else {
             self.bytes.lock().unwrap().write_all(buf)
         }
     }
 }
 
-#[derive(Clone)]
-struct PipeRead {
+pub struct PipeRead {
     inner: Pipe,
 }
 
@@ -85,6 +97,18 @@ impl PipeRead {
     fn new(inner: Pipe) -> Self {
         inner.readers.fetch_add(1, Ordering::SeqCst);
         Self { inner }
+    }
+}
+
+impl Clone for PipeRead {
+    fn clone(&self) -> Self {
+        Self::new(self.inner.clone())
+    }
+}
+
+impl Drop for PipeRead {
+    fn drop(&mut self) {
+        self.inner.readers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -98,8 +122,7 @@ impl Read for PipeRead {
     }
 }
 
-#[derive(Clone)]
-struct PipeWrite {
+pub struct PipeWrite {
     inner: Pipe,
 }
 
@@ -107,6 +130,18 @@ impl PipeWrite {
     fn new(inner: Pipe) -> Self {
         inner.writers.fetch_add(1, Ordering::SeqCst);
         Self { inner }
+    }
+}
+
+impl Clone for PipeWrite {
+    fn clone(&self) -> Self {
+        Self::new(self.inner.clone())
+    }
+}
+
+impl Drop for PipeWrite {
+    fn drop(&mut self) {
+        self.inner.writers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -152,7 +187,43 @@ mod test {
                 write!(b_to_a_write, "World").unwrap();
             })
             .expect("Failed to create thread_test::thread_b");
-        thread_a.join().expect("Failed to join thread_test::thread_a");
-        thread_b.join().expect("Failed to join thread_test::thread_b");
+        thread_a
+            .join()
+            .expect("Failed to join thread_test::thread_a");
+        thread_b
+            .join()
+            .expect("Failed to join thread_test::thread_b");
+    }
+
+    #[test]
+    fn test_close_read() {
+        let (_, mut a_to_b_write) = Pipe::new();
+        assert_eq!(
+            write!(a_to_b_write, "Hello")
+                .expect_err("Write to pipe with no readers succeeded")
+                .kind(),
+            io::ErrorKind::BrokenPipe,
+        );
+    }
+
+    #[test]
+    fn test_close_write() {
+        let (mut a_to_b_read, mut a_to_b_write) = Pipe::new();
+        let _ = write!(a_to_b_write, "Hi").unwrap();
+        std::mem::drop(a_to_b_write);
+        let mut buf = [0u8; 5];
+        assert_eq!(
+            a_to_b_read
+                .read_exact(&mut buf)
+                .expect_err(
+                    format!(
+                        "Constant-size read from pipe with insufficient {}",
+                        "data succeeded",
+                    )
+                    .as_ref()
+                )
+                .kind(),
+            io::ErrorKind::UnexpectedEof,
+        );
     }
 }

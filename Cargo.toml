@@ -1,6 +1,6 @@
 [package]
 name = "extended_io"
-version = "1.6.1"
+version = "1.6.2"
 authors = ["Kevin Moonen <dragonrider7225@gmail.com>"]
 edition = "2018"
 
