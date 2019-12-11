@@ -1,3 +1,4 @@
+#![feature(wait_until)]
 use std::{
     convert::TryFrom,
     error,

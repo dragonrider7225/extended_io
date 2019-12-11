@@ -2,15 +2,14 @@ use std::{
     io::{self, Read, Write},
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
-    thread,
 };
 
 /// A type to asynchronously transfer data between threads.
 #[derive(Clone, Default)]
 pub struct Pipe {
-    bytes: Arc<Mutex<Vec<u8>>>,
+    bytes: Arc<(Mutex<Vec<u8>>, Condvar)>,
     readers: Arc<AtomicU32>,
     writers: Arc<AtomicU32>,
 }
@@ -25,50 +24,79 @@ impl Pipe {
 
 impl Read for Pipe {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut bytes = self.bytes.lock().unwrap();
+        let (bytes_lock, condvar) = &*self.bytes;
+        let mut bytes = bytes_lock.lock().unwrap();
+        // Wait for data so that a wrapper around the pipe that expects "no
+        // available data" to mean "EOF reached" won't decide that the pipe is
+        // dead.
+        if bytes.len() == 0 {
+            bytes = condvar.wait_until(bytes, |bytes| bytes.len() == 0).unwrap();
+        }
         let len = usize::min(buf.len(), bytes.len());
         let mut bytes = bytes.drain(..len);
         for i in 0..len {
             buf[i] = bytes.next().unwrap();
         }
+        // Inform any other threads that may be waiting on access to the pipe
+        // through the `Condvar` that it is available.
+        condvar.notify_one();
         Ok(len)
     }
 
     fn read_exact(&mut self, mut buf: &mut [u8]) -> io::Result<()> {
         loop {
-            let mut bytes = self.bytes.lock().unwrap();
+            let (bytes_lock, condvar) = &*self.bytes;
+            let mut bytes = bytes_lock.lock().unwrap();
             let len = buf.len();
             if bytes.len() < len {
+                // Can't read exactly `buf.len()` bytes from `bytes`, but if
+                // there's still a live writer, then more bytes may come in the
+                // future.
                 if self.writers.load(Ordering::SeqCst) == 0 {
-                    return Err(io::Error::new(
+                    // There is no longer a write end to this pipe and no way
+                    // to create a new one is exposed, so exactly `buf.len()`
+                    // bytes can never be read from this pipe.
+                    condvar.notify_one();
+                    break Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "Pipe: no writers",
                     ));
                 } else {
-                    std::mem::drop(bytes);
-                    thread::yield_now();
+                    bytes = condvar
+                        .wait_until(bytes, |bytes| bytes.len() >= len)
+                        .unwrap();
                 }
-            } else {
-                buf.write_all(&bytes[..len])?;
-                bytes.drain(..len);
-                return Ok(());
             }
+            buf.write_all(&bytes[..len])?;
+            bytes.drain(..len);
+            break Ok(());
         }
     }
 }
 
 impl Write for Pipe {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let (bytes_lock, condvar) = &*self.bytes;
+        let mut bytes = bytes_lock.lock().unwrap();
+        if bytes.len() >= std::usize::MAX {
+            bytes = condvar
+                .wait_until(
+                    bytes,
+                    |bytes| bytes.len() < std::usize::MAX,
+                )
+                .unwrap();
+        }
         if self.readers.load(Ordering::SeqCst) == 0 {
+            condvar.notify_one();
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "Pipe: no readers",
             ))
         } else {
-            let mut bytes = self.bytes.lock().unwrap();
             let len = usize::min(std::usize::MAX - bytes.len(), buf.len());
             bytes.reserve(len);
             bytes.extend_from_slice(buf);
+            condvar.notify_one();
             Ok(len)
         }
     }
@@ -78,13 +106,25 @@ impl Write for Pipe {
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        let (bytes_lock, condvar) = &*self.bytes;
+        let mut bytes = bytes_lock.lock().unwrap();
+        if bytes.len() > std::usize::MAX - buf.len() {
+            bytes = condvar
+                .wait_until(
+                    bytes,
+                    |bytes| bytes.len() <= std::usize::MAX - buf.len(),
+                )
+                .unwrap();
+        }
         if self.readers.load(Ordering::SeqCst) == 0 {
+            condvar.notify_one();
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "Pipe: no readers",
             ))
         } else {
-            self.bytes.lock().unwrap().write_all(buf)
+            condvar.notify_one();
+            bytes.write_all(buf)
         }
     }
 }
