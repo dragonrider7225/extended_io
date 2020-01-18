@@ -1,43 +1,42 @@
+//! A type which enables communication between threads by providing an
+//! implementation of [`Read`], [`BufRead`], and [`Write`] on a shared `Vec`.
+//! The result of calling any function declared by [`Read`] or [`BufRead`] while
+//! a function declared by [`BufRead`] is blocking in another thread is
+//! dependent on whether the new call can be satisfied immediately. If it can,
+//! the pipe will fulfill it immediately. Otherwise, the new call will also
+//! block and the order in which the two calls get satisfied is partially
+//! dependent on which thread gets notified first.
+//!
+//! [`BufRead`]: /std/io/trait.BufRead.html
+//! [`Read`]: /std/io/trait.Read.html
+//! [`Write`]: /std/io/trait.Write.html
+
 use std::{
     io::{self, BufRead, Read, Write},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Condvar, Mutex,
-    },
+    sync::{atomic::{AtomicU32, Ordering}, Arc, Condvar, Mutex},
 };
+
+/// Create a pipe.
+pub fn mk_pipe() -> (PipeRead, PipeWrite) {
+    let ret = Pipe::default();
+    (PipeRead::new(ret.clone()), PipeWrite::new(ret))
+}
 
 fn index_of<T>(value: T, buf: &[T]) -> Option<usize>
 where
   T: PartialEq,
 {
-    for i in 0..buf.len() {
-        if value == buf[i] {
-            return Some(i);
-        }
-    }
-    None
+    buf.iter().position(|v| &value == v)
 }
 
-/// A type to asynchronously transfer data between threads.
-/// This implementation of the concept of a pipe blocks on all reads which
-/// could produce more data than is available as long as there is at least one
-/// [`PipeRead`] that refers to this pipe.
-///
-/// [`PipeRead`]: struct.PipeRead.html
 #[derive(Clone, Default)]
-pub struct Pipe {
+struct Pipe {
     bytes: Arc<(Mutex<Vec<u8>>, Condvar)>,
     readers: Arc<AtomicU32>,
     writers: Arc<AtomicU32>,
 }
 
 impl Pipe {
-    /// Create a pipe.
-    pub fn new() -> (PipeRead, PipeWrite) {
-        let ret = Self::default();
-        (PipeRead::new(ret.clone()), PipeWrite::new(ret))
-    }
-
     fn has_read_end(&self) -> bool {
         self.readers.load(Ordering::SeqCst) > 0
     }
@@ -50,18 +49,15 @@ impl Pipe {
 impl Read for Pipe {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let (bytes_lock, condvar) = &*self.bytes;
-        let mut bytes = bytes_lock.lock().unwrap();
-        // Wait for data so that a wrapper around the pipe that expects "no
+        let bytes = bytes_lock.lock().unwrap();
+        // Wait for data so that a wrapper around a `Read` that expects "no
         // available data" to mean "EOF reached" won't decide that the pipe is
         // dead.
-        if bytes.len() == 0 {
-            bytes = condvar.wait_until(bytes, |bytes| bytes.len() == 0)
-                .unwrap();
-        }
+        let mut bytes = condvar.wait_while(bytes, |bytes| bytes.is_empty()).unwrap();
         let len = usize::min(buf.len(), bytes.len());
         let mut bytes = bytes.drain(..len);
-        for i in 0..len {
-            buf[i] = bytes.next().unwrap();
+        for byte in buf.iter_mut() {
+            *byte = bytes.next().unwrap();
         }
         // Inform any other threads that may be waiting on access to the pipe
         // through the `Condvar` that it is available.
@@ -71,18 +67,11 @@ impl Read for Pipe {
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         let (bytes_lock, condvar) = &*self.bytes;
-        let mut bytes = bytes_lock.lock().unwrap();
-        if self.has_write_end() && bytes.len() < std::usize::MAX - buf.len() {
-            bytes = condvar
-                .wait_until(
-                    bytes,
-                    |bytes| {
-                        !self.has_write_end()
-                            || bytes.len() >= std::usize::MAX - buf.len()
-                    }
-                )
-                .unwrap();
-        }
+        let bytes = bytes_lock.lock().unwrap();
+        let condition = |bytes: &mut Vec<_>| {
+            self.has_write_end() && bytes.len() < std::usize::MAX - buf.len()
+        };
+        let mut bytes = condvar.wait_while(bytes, condition).unwrap();
         // Either the pipe can no longer receive data or the pipe contains
         // enough data that `buf` can be filled completely.
         let len = usize::min(std::usize::MAX - buf.len(), bytes.len());
@@ -95,17 +84,10 @@ impl Read for Pipe {
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         let (bytes_lock, condvar) = &*self.bytes;
         let mut bytes = bytes_lock.lock().unwrap();
-        if self.has_write_end() && bytes.len() < std::usize::MAX - buf.len() {
-            bytes = condvar
-                .wait_until(
-                    bytes,
-                    |bytes| {
-                        !self.has_write_end()
-                            || bytes.len() >= std::usize::MAX - buf.len()
-                    },
-                )
-                .unwrap();
-        }
+        let condition = |bytes: &mut Vec<_>| {
+            self.has_write_end() && bytes.len() < std::usize::MAX - buf.len()
+        };
+        bytes = condvar.wait_while(bytes, condition).unwrap();
         let len = usize::min(std::usize::MAX - buf.len(), bytes.len());
         let s = std::str::from_utf8(&bytes[..len])
             .map_err(|e| {
@@ -122,7 +104,8 @@ impl Read for Pipe {
         let (bytes_lock, condvar) = &*self.bytes;
         let mut bytes = bytes_lock.lock().unwrap();
         let len = buf.len();
-        if bytes.len() < len {
+        let condition = |bytes: &mut Vec<_>| bytes.len() < len;
+        while condition(&mut bytes) {
             // Can't read exactly `buf.len()` bytes from `bytes`, but if
             // there's still a live writer, then more bytes may come in the
             // future.
@@ -131,15 +114,9 @@ impl Read for Pipe {
                 // to create a new one is exposed, so exactly `buf.len()`
                 // bytes can never be read from this pipe.
                 condvar.notify_one();
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "Pipe: no writers",
-                ));
-            } else {
-                bytes = condvar
-                    .wait_until(bytes, |bytes| bytes.len() >= len)
-                    .unwrap();
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Pipe: no writers"));
             }
+            bytes = condvar.wait(bytes).unwrap();
         }
         buf.write_all(&bytes[..len])?;
         bytes.drain(..len);
@@ -169,45 +146,27 @@ impl BufRead for Pipe {
         let mut bytes = bytes_lock.lock().unwrap();
         let max_read = std::usize::MAX - buf.len();
         let mut next_check = 0;
-        if self.has_write_end() {
-            match index_of(byte, &bytes[next_check..]) {
-                Some(idx) => next_check = usize::min(idx, max_read - 1),
-                None => {
-                    next_check = usize::min(bytes.len(), max_read - 1);
-                    if next_check != max_read - 1 {
-                        bytes = condvar
-                            .wait_until(bytes, |bytes| {
-                                if !self.has_write_end() {
-                                    return true;
-                                }
-                                match index_of(byte, &bytes[next_check..]) {
-                                    Some(idx) => {
-                                        next_check = usize::min(
-                                            idx,
-                                            max_read - 1,
-                                        );
-                                        true
-                                    }
-                                    None => {
-                                        next_check = usize::min(
-                                            bytes.len(),
-                                            max_read - 1,
-                                        );
-                                        false
-                                    }
-                                }
-                            })
-                            .unwrap();
+        let condition = |bytes: &mut Vec<_>| {
+            if self.has_write_end() {
+                match index_of(byte, &bytes[next_check..]) {
+                    Some(idx) => {
+                        next_check = usize::min(idx, max_read - 1);
+                        false
+                    }
+                    None => {
+                        next_check = usize::min(bytes.len(), max_read - 1);
+                        next_check == max_read - 1
                     }
                 }
+            } else {
+                false
             }
-        }
-        if self.has_write_end() ||
-            bytes.len() > 0 && bytes[next_check] == byte
-        {
+        };
+        bytes = condvar.wait_while(bytes, condition).unwrap();
+        if self.has_write_end() || bytes.len() > 0 && bytes[next_check] == byte {
             // Either `bytes[next_check]` is `byte` or `next_check` is
             // `max_read`.
-            if bytes[next_check] == byte {
+            let ret = if bytes[next_check] == byte {
                 buf.reserve(next_check + 1);
                 buf.extend(bytes.drain(..=next_check));
                 Ok(next_check + 1)
@@ -215,12 +174,15 @@ impl BufRead for Pipe {
                 buf.reserve(max_read);
                 buf.extend(bytes.drain(..max_read));
                 Ok(max_read)
-            }
+            };
+            condvar.notify_one();
+            ret
         } else {
             // There's never going to be any more data, so drain as much data
             // as possible into `buf`.
             let len = usize::min(max_read, bytes.len());
             buf.extend(bytes.drain(..len));
+            condvar.notify_one();
             Ok(len)
         }
     }
@@ -245,20 +207,11 @@ impl Write for Pipe {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let (bytes_lock, condvar) = &*self.bytes;
         let mut bytes = bytes_lock.lock().unwrap();
-        if bytes.len() >= std::usize::MAX {
-            bytes = condvar
-                .wait_until(
-                    bytes,
-                    |bytes| bytes.len() < std::usize::MAX,
-                )
-                .unwrap();
-        }
+        let condition = |bytes: &mut Vec<_>| bytes.len() >= std::usize::MAX;
+        bytes = condvar.wait_while(bytes, condition).unwrap();
         if !self.has_read_end() {
             condvar.notify_one();
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "Pipe: no readers",
-            ))
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "Pipe: no readers"))
         } else {
             let len = usize::min(std::usize::MAX - bytes.len(), buf.len());
             bytes.reserve(len);
@@ -275,20 +228,11 @@ impl Write for Pipe {
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         let (bytes_lock, condvar) = &*self.bytes;
         let mut bytes = bytes_lock.lock().unwrap();
-        if bytes.len() > std::usize::MAX - buf.len() {
-            bytes = condvar
-                .wait_until(
-                    bytes,
-                    |bytes| bytes.len() <= std::usize::MAX - buf.len(),
-                )
-                .unwrap();
-        }
+        let condition = |bytes: &mut Vec<_>| bytes.len() > std::usize::MAX - buf.len();
+        bytes = condvar.wait_while(bytes, condition).unwrap();
         if !self.has_read_end() {
             condvar.notify_one();
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "Pipe: no readers",
-            ))
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "Pipe: no readers"))
         } else {
             condvar.notify_one();
             bytes.write_all(buf)
@@ -296,6 +240,7 @@ impl Write for Pipe {
     }
 }
 
+/// The read end of a pipe.
 pub struct PipeRead {
     inner: Pipe,
 }
@@ -346,11 +291,7 @@ impl BufRead for PipeRead {
         self.inner.consume(amt)
     }
 
-    fn read_until(
-        &mut self,
-        byte: u8,
-        buf: &mut Vec<u8>
-    ) -> io::Result<usize> {
+    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> io::Result<usize> {
         self.inner.read_until(byte, buf)
     }
 
@@ -359,6 +300,7 @@ impl BufRead for PipeRead {
     }
 }
 
+/// The write end of a pipe.
 pub struct PipeWrite {
     inner: Pipe,
 }
@@ -404,8 +346,8 @@ mod test {
 
     #[test]
     fn test_pipe() {
-        let (mut a_to_b_read, mut a_to_b_write) = Pipe::new();
-        let (mut b_to_a_read, mut b_to_a_write) = Pipe::new();
+        let (mut a_to_b_read, mut a_to_b_write) = mk_pipe();
+        let (mut b_to_a_read, mut b_to_a_write) = mk_pipe();
         let thread_a = thread::Builder::new()
             .name("thread_test::thread_a".to_string())
             .spawn(move || {
@@ -434,7 +376,7 @@ mod test {
 
     #[test]
     fn test_close_read() {
-        let (_, mut a_to_b_write) = Pipe::new();
+        let (_, mut a_to_b_write) = mk_pipe();
         assert_eq!(
             write!(a_to_b_write, "Hello")
                 .expect_err("Write to pipe with no readers succeeded")
@@ -445,7 +387,7 @@ mod test {
 
     #[test]
     fn test_close_write() {
-        let (mut a_to_b_read, mut a_to_b_write) = Pipe::new();
+        let (mut a_to_b_read, mut a_to_b_write) = mk_pipe();
         let _ = write!(a_to_b_write, "Hi").unwrap();
         std::mem::drop(a_to_b_write);
         let mut buf = [0u8; 5];
