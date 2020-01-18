@@ -1,4 +1,6 @@
-#![feature(wait_until)]
+//! A crate for various bits of I/O that I couldn't find a (simple)
+//! implementation for in `std`.
+
 use std::{
     convert::TryFrom,
     error,
