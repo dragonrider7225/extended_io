@@ -534,10 +534,10 @@ pub fn write_byte_slice(out: &mut dyn Write, vals: &[u8]) -> io::Result<()> {
 }
 
 /// Read a line from the specified bit source and convert that string into a T.
-pub fn read_t<T, E>(src: &mut dyn BufRead) -> io::Result<T>
+pub fn read_t<T>(src: &mut dyn BufRead) -> io::Result<T>
 where
-    T: FromStr<Err = E>,
-    E: Into<Box<dyn error::Error + Send + Sync>>,
+    T: FromStr,
+    <T as FromStr>::Err: Into<Box<dyn error::Error + Send + Sync>>,
 {
     let mut buf = String::new();
     let _ = src.read_line(&mut buf)?;
@@ -552,20 +552,20 @@ where
  *
  * [`read_t`]: fn.read_t
  */
-pub fn read_t_stdin<T, E>() -> io::Result<T>
+pub fn read_t_stdin<T>() -> io::Result<T>
 where
-    T: FromStr<Err = E>,
-    E: Into<Box<dyn error::Error + Send + Sync>>,
+    T: FromStr,
+    <T as FromStr>::Err: Into<Box<dyn error::Error + Send + Sync>>,
 {
     read_t(&mut io::stdin().lock())
 }
 
 /// Write the specified string to stdout then read an object of the specified
 /// FromStr type from stdin as a string.
-pub fn prompt<T, E>(p: &str) -> io::Result<T>
+pub fn prompt<T>(p: &str) -> io::Result<T>
 where
-    T: FromStr<Err = E>,
-    E: Into<Box<dyn error::Error + Send + Sync>>,
+    T: FromStr,
+    <T as FromStr>::Err: Into<Box<dyn error::Error + Send + Sync>>,
 {
     let mut stdout = io::stdout();
     stdout.write_all(&p.as_bytes()[..])?;
